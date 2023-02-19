@@ -10,7 +10,7 @@
 #include "freertos/portmacro.h"
 #include "driver/spi_master.h"
 #include "driver/gpio.h"
-//TEST
+//TEST from dev
 // SPI pins
 #define HSPI_MISO_PIN 12
 #define HSPI_MOSI_PIN 13
