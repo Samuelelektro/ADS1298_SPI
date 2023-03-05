@@ -17,7 +17,10 @@
         "gpio.h": "c",
         "bitset": "c",
         "chrono": "c",
-        "algorithm": "c"
+        "algorithm": "c",
+        "spi_common.h": "c",
+        "stdint.h": "c",
+        "regex": "c"
     },
     "idf.flashType": "UART"
 }
