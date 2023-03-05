@@ -1,16 +1,25 @@
 // tjek om buadrate overhoved virker på LOGI.. 
+// Måske skal CS trækkes lav, før DRDY kan skabe interrupt. i ADS_ready eller blot inden if(); fx
+// Tjek hvordan DRDY og CS!
+// hvis ikke det virker, skal 2ms timer måske sættes op til CS 
+//eller kan CS være konstant lav, og DRDY dekterer 2ms interrupt
+// Skitser Dataflow fra de 2 kerner
 
 #include <stdio.h>
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_pm.h"
-#include "esp_intr_alloc.h"
+//#include "esp_intr_alloc.h"
 #include "driver/uart.h"
 #include "freertos/portmacro.h"
 #include "driver/spi_master.h"
 #include "driver/gpio.h"
-//TEST from dev
+#include "esp_task_wdt.h"
+#include "esp_intr_alloc.h"
+#include "esp32/rom/ets_sys.h"
+
+//TEST
 // SPI pins
 #define HSPI_MISO_PIN 12
 #define HSPI_MOSI_PIN 13
@@ -22,7 +31,8 @@
 #define ADS_RESET_GPIO 26
 #define POWERDOWN_GPIO 25
 #define START_GPIO 33
-#define GPIO_OUTPUT_PIN_SEL ((1ULL<<ADS_RESET_GPIO)|(1ULL<<POWERDOWN_GPIO)|(1ULL<<START_GPIO))
+//#define GPIO_OUTPUT_PIN_SEL ((1ULL<<ADS_RESET_GPIO)|(1ULL<<POWERDOWN_GPIO)|(1ULL<<START_GPIO))
+#define GPIO_OUTPUT_PIN_SEL ((1<<ADS_RESET_GPIO)|(1<<POWERDOWN_GPIO)|(1<<START_GPIO))
 //#define GPIO_INPUT_PIN_SEL (1ULL<<ADS_INTERRUPT_GPIO)
 
 // Falling egde -> GPIO_INTR_NEGEDGE // Rising edge -> GPIO_INTR_POSEDGE // any edge  -> GPIO_INTR_ANYEDGE
@@ -33,6 +43,7 @@
 #define GPIO_NUM_MAX 40
 
 // test int
+volatile int ads_flag = 0;
 volatile bool interrupt_enabled = true;
 
 //##Global variables##
@@ -50,6 +61,7 @@ spi_device_handle_t hspi;
 // Define the state machine states
 typedef enum {
     ADS,
+    senddata,
     state2
 } statetype;
 
@@ -69,8 +81,6 @@ void ADS1298_init_conf(void);
 // Define the state machine task
 void state_machine(void *pvParameter)
 {
-
-
     // Set Powerdown to logic high, wait 500ms
     gpio_set_level(POWERDOWN_GPIO, 1);
     vTaskDelay(500 / portTICK_PERIOD_MS);
@@ -81,14 +91,13 @@ void state_machine(void *pvParameter)
     gpio_set_level(ADS_RESET_GPIO, 1);
     vTaskDelay(50 / portTICK_PERIOD_MS);
 
-    // Attach interrupt on falling edge
-     //ads_attachInterrupt();
-
-    // Install GPIO ISR service
-    //gpio_install_isr_service(ESP_INTR_FLAG_LEVEL4); // if issues appears with this level, try other priority level
-
     // Initialize HSPI    
     hspi_init();
+
+    // Attach interrupt on falling edge
+    ads_attachInterrupt();
+
+ 
 
     // Initialize the state machine
     statetype state = ADS;
@@ -100,36 +109,41 @@ void state_machine(void *pvParameter)
         gpio_intr_enable(ADS_INTERRUPT_GPIO);
         switch (state) {
             case ADS:
-                ESP_LOGI("STATE MACHINE", "In ADS");
-
+                //ESP_LOGI("STATE MACHINE", "In ADS");
                 ADS_ready();
 
-                // Wait for the interrupt to trigger
-                // while (gpio_get_level(ADS_INTERRUPT_GPIO) == 0) {
-                //     //vTaskDelay(1 / portTICK_PERIOD_MS); // wait 1ms
-                // }
+                gpio_set_level(HSPI_CS_PIN, 0);  //pull SS low to prep for another transfer
 
-                // ESP_LOGI("FUNCTION 1.1", "Running # 1");
-                // // Enable the interrupt and wait for it to trigger
-                // gpio_intr_enable(ADS_INTERRUPT_GPIO);
-                // // ESP_LOGI("FUNCTION 1.2", "Running ## 1");
-                //  vTaskDelay(2 / portTICK_PERIOD_MS); // wait 2ms
-                // //ads_detachInterrupt();
-                // // ESP_LOGI("FUNCTION 1.3", "Running ### 1");
-                // gpio_intr_disable(ADS_INTERRUPT_GPIO);
-                // // ESP_LOGI("FUNCTION 1.4", "Running #### 1");
+                if(ads_flag == 1){
+                    
+                    
+                    //gpio_set_level(HSPI_CS_PIN, 0);  //pull SS low to prep for another transfer
+                    ESP_LOGI("Interrupt fucking", "#######worked!########");
+                    for (int i = 0; i < 27; i++) {
+                            ADS_buffer[i] = hspi_transfer_byte(0x00);
+                        }
+                    gpio_set_level(HSPI_CS_PIN, 1);  //disable ADS as slave && pull ss high to signify end of data transfer   
+                    state = senddata;
+                    break;
+                }
+            
                 
-                gpio_intr_enable(ADS_INTERRUPT_GPIO);
-                vTaskDelay(2 / portTICK_PERIOD_MS); // wait 2ms
-                gpio_intr_disable(ADS_INTERRUPT_GPIO);
+            state = state2;
+            break;
 
-                // Set CS pin to logic high
-                gpio_set_level(HSPI_CS_PIN, 1);
+            case senddata:
+                if(ads_flag == 1){
+                    
+                    ESP_LOG_BUFFER_HEX("TAG", ADS_buffer, sizeof(ADS_buffer));
+                    ads_flag = 0;
+                }
+                
+            state = state2;
+            break;
 
-                state = state2;
-                break;
+
             case state2:
-                ESP_LOGI("STATE MACHINE", "In state 2");
+                //ESP_LOGI("STATE MACHINE", "In state 2");
                 state = ADS;
                 break;
         }
@@ -140,7 +154,11 @@ void state_machine(void *pvParameter)
 
 void app_main(void)
 
-{
+{   
+    //ads_attachInterrupt();
+    // Disable WDT
+    //esp_task_wdt_delete(NULL);  
+
     // Set all pins as inputs with pull-up enabled
     // for (int i = 0; i < GPIO_NUM_MAX; i++) {
     //     if (i != 12 && i != 13 && i != 14 && i != 15 && i != 25 && i != 26 && i != 27 && i != 33) {
@@ -153,19 +171,6 @@ void app_main(void)
     //         gpio_config(&io_conf);
     //     }
     // }
-    
-    // Configure ADS_INTERRUPT_GPIO as input with pullup enabled
-    //gpio_config_t io_conf;
-    //io_conf.pin_bit_mask = GPIO_INPUT_PIN_SEL;
-    //io_conf.mode = GPIO_MODE_INPUT;
-    //io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
-    //io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    //gpio_config(&io_conf);
-    
-    // Install GPIO ISR service
-    //gpio_install_isr_service(ESP_INTR_FLAG_LEVEL3); // if issues appears with this level, try other priority level
-    gpio_install_isr_service(0);
-
 
     // Configure ADSReset, Powerdown, and Start as outputs    
     gpio_config_t io_conf = {
@@ -184,7 +189,6 @@ void app_main(void)
     };
     esp_pm_configure(&pm_config);   
 
-
     // //Configure UART with baudrate 57600
     // uart_config_t uart_config = {
     // .baud_rate = 115200,
@@ -196,9 +200,8 @@ void app_main(void)
     // uart_param_config(UART_NUM_0, &uart_config);
 
     
-
-    // Create the state machine task and pin it to core 1
-    xTaskCreatePinnedToCore(&state_machine, "state_machine", 4096, NULL, 1, NULL, 1);
+    // Create the state machine task and pin it to core 0
+    xTaskCreatePinnedToCore(&state_machine, "state_machine", 4096, NULL, 1, NULL, 0);
 
 }
 
@@ -248,62 +251,39 @@ uint8_t hspi_transfer_byte(uint8_t data) {
     return trans.rx_data[0];
 }
 
-// // Following functions is for interrupt, when data from ADS! is ready!"
-// void ads_attachInterrupt(void) {
-//     gpio_config_t io_conf;
-//     // Interrupt on falling edge
-//     io_conf.intr_type = FALLING;
-//     // Bit mask of the pins that you want to set
-//     io_conf.pin_bit_mask = (1 << ADS_INTERRUPT_GPIO); 
-//     // Set as input mode
-//     io_conf.mode = GPIO_MODE_INPUT;
-//     // Enable pull-up mode
-//     io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
-//     gpio_config(&io_conf);
-
-//     gpio_isr_handler_add(ADS_INTERRUPT_GPIO, ads_isr_handler, NULL);
-//     gpio_set_intr_type(ADS_INTERRUPT_GPIO, GPIO_INTR_NEGEDGE);
-//     gpio_intr_enable(ADS_INTERRUPT_GPIO);
-// }
-
-// test int
 void ads_attachInterrupt(void) {
+
     gpio_config_t io_conf;
     // Interrupt on falling edge
-    io_conf.intr_type = GPIO_INTR_ANYEDGE;
+    io_conf.intr_type = FALLING;
     // Bit mask of the pins that you want to set
-    io_conf.pin_bit_mask = (1ULL << ADS_INTERRUPT_GPIO); 
+    //io_conf.pin_bit_mask = (1ULL << ADS_INTERRUPT_GPIO); 
+    io_conf.pin_bit_mask = 1 << ADS_INTERRUPT_GPIO; 
     // Set as input mode
     io_conf.mode = GPIO_MODE_INPUT;
     // Enable pull-up mode
     io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
     gpio_config(&io_conf);
 
-    //gpio_install_isr_service(0);
+    gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
 
     gpio_isr_handler_add(ADS_INTERRUPT_GPIO, ads_isr_handler, NULL);
+    // Enable the interrupt
+    gpio_intr_enable(ADS_INTERRUPT_GPIO);
 }
 
-// void ads_detachInterrupt(void) {
-//     gpio_isr_handler_remove(ADS_INTERRUPT_GPIO);
-// }
-
-// test int
 void ads_detachInterrupt(void) {
     gpio_isr_handler_remove(ADS_INTERRUPT_GPIO);
     gpio_intr_disable(ADS_INTERRUPT_GPIO);
     gpio_uninstall_isr_service();
 }
 
+//void IRAM_ATTR ads_isr_handler(void *arg) {
 void IRAM_ATTR ads_isr_handler(void *arg) {
-    // Do something when interrupt triggers
-    ESP_LOGI("Interrupt triggered!", "Start reading Data#######################");
-    for (int i = 0; i < ADSsize; i++) {
-            ADS_buffer[i] = hspi_transfer_byte(0x00);
-    }
-    //esp_restart();
-}
 
+    ads_flag = 1;
+
+}
 
 // Definetion of the random functions
 void ADS_ready(void)
@@ -311,10 +291,8 @@ void ADS_ready(void)
     // flag for ADS1298_init_conf (run only once)
     static int flag_ADS1298 = 0;
     
-    ESP_LOGI("FUNCTION 1", "Running function 1");
+    //ESP_LOGI("FUNCTION 1", "Running function 1");
     
-    // Set CS pin to logic low
-    gpio_set_level(HSPI_CS_PIN, 0);
 
     //complete setup (once only)
     if (flag_ADS1298 == 0) {

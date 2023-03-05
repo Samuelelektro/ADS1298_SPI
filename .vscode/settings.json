@@ -14,7 +14,10 @@
         "esp_log.h": "c",
         "esp_pm.h": "c",
         "spi_master.h": "c",
-        "gpio.h": "c"
+        "gpio.h": "c",
+        "bitset": "c",
+        "chrono": "c",
+        "algorithm": "c"
     },
     "idf.flashType": "UART"
 }
