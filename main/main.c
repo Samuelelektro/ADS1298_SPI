@@ -32,7 +32,7 @@
 #define HSPI_SCLK_PIN 14
 #define HSPI_CS_PIN   15
 
-// ADS pins
+// ADS pins 
 #define ADS_INTERRUPT_GPIO 27
 #define ADS_RESET_GPIO 26
 #define POWERDOWN_GPIO 25
